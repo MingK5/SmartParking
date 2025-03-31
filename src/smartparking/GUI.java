@@ -328,7 +328,7 @@ public class GUI extends JFrame {
                 slot.setBackground(new Color(100, 100, 100)); // Dark gray for reserved
                 break;
             case "reserved_occupied":
-                slot.setBackground(new Color(100, 100, 100)); // Dark gray
+                slot.setBackground(new Color(100, 100, 100)); // Dark gray + car icon
                 addCarIcon(slot);
                 break;
             case "time_exceeded":
@@ -336,10 +336,16 @@ public class GUI extends JFrame {
                 addCarIcon(slot);
                 break;
             case "booked":
-                slot.setBackground(Color.GREEN);
+                // Only green if user booked it
+                if (userBookedSlots.contains(spotId)) {
+                    slot.setBackground(Color.GREEN);
+                } 
                 break;
             case "booked_occupied":
-                slot.setBackground(Color.GREEN); // Same color as booked
+                // Only green if user booked it
+                if (userBookedSlots.contains(spotId)) {
+                    slot.setBackground(Color.GREEN);
+                } 
                 addCarIcon(slot);
                 break;
             case "wrong_parking":
@@ -350,6 +356,7 @@ public class GUI extends JFrame {
                 slot.setBackground(Color.WHITE);
                 break;
         }
+
 
         if (spotId.startsWith("B") || spotId.startsWith("C") || spotId.startsWith("D") || spotId.startsWith("E")) {
             slot.add(text, BorderLayout.WEST);

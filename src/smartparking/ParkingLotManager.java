@@ -94,30 +94,42 @@ public class ParkingLotManager {
     public String getSpotStatus(String spotId) {
         ParkingSpot spot = parkingSpots.get(spotId);
         if (spot == null) return "available";
-        
-        // Only change status with 20% probability to make changes more gradual
-        if (random.nextDouble() > 0.2 && spotStatusCache.containsKey(spotId)) {
+
+        // User booked spots always show as green
+        if (isUserBooked(spotId)) {
+            return "booked";
+        }
+
+        // Return cached status 80% of the time to reduce flickering
+        if (spotStatusCache.containsKey(spotId) && random.nextDouble() > 0.2) {
             return spotStatusCache.get(spotId);
         }
-        
+
         String status;
         if (spot.isBooked()) {
-            if (isUserBooked(spotId)) {
-                status = "booked"; // Always show user bookings as green
+            // For booked spots (not user booked)
+            double rand = random.nextDouble();
+            if (rand < 0.40) {
+                status = "reserved";
+            } else if (rand < 0.60) {
+                status = "reserved_occupied";
+            } else if (rand < 0.80) {
+                status = "time_exceeded";
             } else {
-                // Other bookings show as reserved
-                if (random.nextDouble() < 0.3) {
-                    status = "reserved_occupied";
-                } else {
-                    status = "reserved";
-                }
+                status = "wrong_parking";
             }
-        } else if (random.nextDouble() < 0.05) {
-            status = "wrong_parking";
         } else {
-            status = "available";
+            // Available spots
+            double rand = random.nextDouble();
+            if (rand < 0.05) {
+                status = "reserved";
+            } else if (rand < 0.20) {
+                status = "reserved_occupied";
+            } else {
+                status = "available";
+            }
         }
-        
+
         spotStatusCache.put(spotId, status);
         return status;
     }
@@ -149,7 +161,8 @@ public class ParkingLotManager {
             boolean success = spot != null && spot.book(request.hours);
             
             if (success) {
-                notifyListeners(request.spotId, "booked");
+                String status = request.isPriority ? "booked" : "reserved"; 
+                notifyListeners(request.spotId, status);
                 notifyUser("Slot " + request.spotId + " booked for " + request.hours + " hours.");
                 bookingsProcessed.incrementAndGet();
             } else {
