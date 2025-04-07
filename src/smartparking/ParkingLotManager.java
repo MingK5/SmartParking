@@ -3,36 +3,57 @@ package smartparking;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.locks.ReentrantLock;
 import java.util.function.Consumer;
+import javax.swing.JDialog;
+import javax.swing.JLabel;
+import javax.swing.JButton;
+import javax.swing.JPanel;
+import javax.swing.SwingUtilities;
+import java.awt.BorderLayout;
+import java.awt.Font;
+import javax.swing.SwingConstants;
 
 public class ParkingLotManager {
     private static ParkingLotManager instance;
+
     private final ConcurrentMap<String, ParkingSpot> parkingSpots;
     private final ConcurrentMap<String, Consumer<String>> listeners;
     private final ExecutorService notificationExecutor;
     private final PriorityBlockingQueue<ParkingRequest> bookingQueue;
     private final ScheduledExecutorService monitorExecutor;
+    private final Set<String> userBookedSpots;
+    private final Map<String, String> spotStatusCache;
+    private final LinkedBlockingQueue<Runnable> updateBuffer;
+    private final Semaphore bookingSemaphore;
+    private final ReentrantLock cacheLock;
+    private final AtomicInteger bookingsProcessed;
+    private final AtomicInteger concurrentBookings;
+    private final AtomicInteger failedBookings;
+    private final Map<String, Map<String, String>> userBookingDetails = new ConcurrentHashMap<>();
+    private final Map<String, UserProfile> userProfiles = new ConcurrentHashMap<>();
+    private final Map<String, Set<String>> userBookings = new ConcurrentHashMap<>();
+
     private GUI gui;
-    private final Random random = new Random();
-    private final Map<String, String> spotStatusCache = new ConcurrentHashMap<>();
-    private final Set<String> userBookedSpots = Collections.synchronizedSet(new HashSet<>());
-    
-    // Metrics
-    private final AtomicInteger bookingsProcessed = new AtomicInteger();
-    private final AtomicInteger concurrentBookings = new AtomicInteger();
-    private final AtomicInteger failedBookings = new AtomicInteger();
 
     private ParkingLotManager() {
         this.parkingSpots = new ConcurrentHashMap<>();
         this.listeners = new ConcurrentHashMap<>();
-        this.notificationExecutor = new ThreadPoolExecutor(1, 1, 0L, TimeUnit.MILLISECONDS,
-                new LinkedBlockingQueue<>(100),
-                new ThreadPoolExecutor.DiscardOldestPolicy());
-        this.bookingQueue = new PriorityBlockingQueue<>(11, 
-                Comparator.comparingInt(req -> req.isPriority ? 0 : 1));
+        this.notificationExecutor = Executors.newSingleThreadExecutor();
+        this.bookingQueue = new PriorityBlockingQueue<>(11, Comparator.comparingInt(r -> r.isPriority ? 0 : 1));
         this.monitorExecutor = Executors.newSingleThreadScheduledExecutor();
+        this.userBookedSpots = Collections.synchronizedSet(new HashSet<>());
+        this.spotStatusCache = new ConcurrentHashMap<>();
+        this.updateBuffer = new LinkedBlockingQueue<>();
+        this.bookingSemaphore = new Semaphore(5); // Allows 5 concurrent bookings max
+        this.cacheLock = new ReentrantLock(true);
+        this.bookingsProcessed = new AtomicInteger();
+        this.concurrentBookings = new AtomicInteger();
+        this.failedBookings = new AtomicInteger();
+
         initializeSpots();
         startBookingProcessor();
+        startUpdateProcessor(); // NEW: start central buffer handler
         startMonitoring();
     }
 
@@ -47,7 +68,7 @@ public class ParkingLotManager {
         for (char zone = 'A'; zone <= 'F'; zone++) {
             int limit = (zone == 'A' || zone == 'F') ? 14 : 12;
             for (int i = 1; i <= limit; i++) {
-                String spotId = String.valueOf(zone) + i;
+                String spotId = zone + String.valueOf(i);
                 parkingSpots.put(spotId, new ParkingSpot(spotId, this));
                 registerListener(spotId, status -> notifyListeners(spotId, status));
             }
@@ -69,6 +90,20 @@ public class ParkingLotManager {
         }, "BookingProcessor").start();
     }
 
+    private void startUpdateProcessor() {
+        new Thread(() -> {
+            while (true) {
+                try {
+                    Runnable updateTask = updateBuffer.take();
+                    updateTask.run();
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }, "BufferedUpdateProcessor").start();
+    }
+
     private void startMonitoring() {
         monitorExecutor.scheduleAtFixedRate(() -> {
             System.out.println("[Monitor] Queue size: " + bookingQueue.size());
@@ -86,110 +121,133 @@ public class ParkingLotManager {
 
     public String[] getSpotsInZone(String zone) {
         return parkingSpots.keySet().stream()
-                .filter(spotId -> spotId.startsWith(zone))
+                .filter(id -> id.startsWith(zone))
                 .sorted(Comparator.comparingInt(s -> Integer.parseInt(s.substring(1))))
                 .toArray(String[]::new);
     }
 
-    public String getSpotStatus(String spotId) {
+    public String getSpotStatus(String spotId, String userId) {
+        cacheLock.lock();
+        try {
+            if (isUserBooked(spotId)) return "booked";
+
+            if (isSoftLocked(spotId)) {
+                if (isSoftLockedByUser(spotId, userId)) {
+                    return "available"; // allow the user who locked it to proceed
+                } else {
+                    return "soft_locked"; // someone else locked it
+                }
+            }
+
+            return spotStatusCache.getOrDefault(spotId, "available");
+        } finally {
+            cacheLock.unlock();
+        }
+    }
+    
+    public boolean isSoftLocked(String spotId) {
         ParkingSpot spot = parkingSpots.get(spotId);
-        if (spot == null) return "available";
-
-        // User booked spots always show as green
-        if (isUserBooked(spotId)) {
-            return "booked";
-        }
-
-        // Return cached status 80% of the time to reduce flickering
-        if (spotStatusCache.containsKey(spotId) && random.nextDouble() > 0.2) {
-            return spotStatusCache.get(spotId);
-        }
-
-        String status;
-        if (spot.isBooked()) {
-            // For booked spots (not user booked)
-            double rand = random.nextDouble();
-            if (rand < 0.40) {
-                status = "reserved";
-            } else if (rand < 0.60) {
-                status = "reserved_occupied";
-            } else if (rand < 0.80) {
-                status = "time_exceeded";
-            } else {
-                status = "wrong_parking";
-            }
-        } else {
-            // Available spots
-            double rand = random.nextDouble();
-            if (rand < 0.05) {
-                status = "reserved";
-            } else if (rand < 0.20) {
-                status = "reserved_occupied";
-            } else {
-                status = "available";
-            }
-        }
-
-        spotStatusCache.put(spotId, status);
-        return status;
+        return spot != null && spot.isSoftLocked();
     }
 
-    public void markAsUserBooked(String spotId) {
-        userBookedSpots.add(spotId);
-        notifyListeners(spotId, "booked");
+    public boolean isSoftLockedByUser(String spotId, String userId) {
+        ParkingSpot spot = parkingSpots.get(spotId);
+        return spot != null && spot.isSoftLockedBy(userId);
     }
 
-    public void markAsUserUnbooked(String spotId) {
-        userBookedSpots.remove(spotId);
-        notifyListeners(spotId, "available");
+    // Overloaded method for system booking or when userId is unknown
+    public String getSpotStatus(String spotId) {
+        return getSpotStatus(spotId, null);
     }
+    
+    public void registerUser(UserProfile profile) {
+        userProfiles.put(profile.getUserId(), profile);
+        userBookings.putIfAbsent(profile.getUserId(), ConcurrentHashMap.newKeySet());
+    }
+
+    public boolean userHasReachedLimit(String userId) {
+        UserProfile profile = userProfiles.get(userId);
+        Set<String> bookings = userBookings.getOrDefault(userId, Set.of());
+        return profile != null && bookings.size() >= profile.getMaxBookingsAllowed();
+    }
+
+
+    public void markAsUserBooked(String spotId, String userId, String carPlate, String duration) {
+        userBookings.get(userId).add(spotId);
+        userBookingDetails
+            .computeIfAbsent(userId, k -> new ConcurrentHashMap<>())
+            .put(spotId, "Plate: " + carPlate + ", Duration: " + duration);
+    }
+
+    public Map<String, String> getUserBookings(String userId) {
+        return userBookingDetails.getOrDefault(userId, Collections.emptyMap());
+    }
+
+    public void markAsUserUnbooked(String spotId, String userId) {
+        userBookings.getOrDefault(userId, Set.of()).remove(spotId);
+        Map<String, String> details = userBookingDetails.get(userId);
+        if (details != null) details.remove(spotId);
+    }
+
 
     public boolean isUserBooked(String spotId) {
-        return userBookedSpots.contains(spotId);
+        return userBookings.values().stream().anyMatch(set -> set.contains(spotId));
     }
 
-    public CompletableFuture<Boolean> bookSpot(String spotId, int hours, boolean isPriority) {
+    public CompletableFuture<Boolean> bookSpot(String spotId, int hours, String label, boolean isPriority, String userId){
         CompletableFuture<Boolean> future = new CompletableFuture<>();
-        bookingQueue.put(new ParkingRequest(spotId, hours, isPriority, future));
+        bookingQueue.offer(new ParkingRequest(spotId, hours, label, isPriority, future, userId));
         return future;
     }
 
     private void processBooking(ParkingRequest request) {
-        concurrentBookings.incrementAndGet();
         try {
+            bookingSemaphore.acquire(); // Limit concurrency
+            concurrentBookings.incrementAndGet();
+
             ParkingSpot spot = parkingSpots.get(request.spotId);
-            boolean success = spot != null && spot.book(request.hours);
-            
+            long millis = "30 minutes".equals(request.label) ? 30 * 60 * 1000L : request.hours * 60L * 60 * 1000L;
+            boolean success = spot != null && spot.book(millis, request.userId);
+
             if (success) {
-                String status = request.isPriority ? "booked" : "reserved"; 
-                notifyListeners(request.spotId, status);
-                notifyUser("Slot " + request.spotId + " booked for " + request.hours + " hours.");
                 bookingsProcessed.incrementAndGet();
+                enqueueUpdate(request.spotId, "booked"); // remove conditional reserved/booked logic
+                String readable = "1 hour";
+                    if ("30 minutes".equals(request.label)) {
+                        readable = "30 minutes";
+                    } else if (request.hours > 1) {
+                        readable = request.hours + " hours";
+                    }
+                enqueueUserMessage("Slot " + request.spotId + " booked for " + readable + ".");
             } else {
                 failedBookings.incrementAndGet();
-                notifyUser("Booking failed for spot " + request.spotId);
+                enqueueUpdate(request.spotId, "available"); // reset only on failure
+                enqueueUserMessage("Booking failed for spot " + request.spotId);
             }
             request.future.complete(success);
+        } catch (InterruptedException e) {
+            request.future.completeExceptionally(e);
         } finally {
             concurrentBookings.decrementAndGet();
+            bookingSemaphore.release();
         }
     }
 
     public CompletableFuture<Boolean> cancelBooking(String spotId) {
         ParkingSpot spot = parkingSpots.get(spotId);
-        if (spot == null) {
-            return CompletableFuture.completedFuture(false);
-        }
-        
+        if (spot == null) return CompletableFuture.completedFuture(false);
+
+        // Use internal thread instead of ForkJoinPool
         return CompletableFuture.supplyAsync(() -> {
-            if (spot.cancelBooking()) {
-                notifyListeners(spotId, "available");
-                notifyUser("Booking for " + spotId + " canceled.");
-                return true;
+            boolean result = spot.cancelBooking();
+            if (result) {
+                enqueueUpdate(spotId, "available");
+                enqueueUserMessage("Booking for " + spotId + " canceled.");
             }
-            return false;
-        });
+            return result;
+        }, notificationExecutor); // use dedicated executor
     }
+
 
     public String[] getAllBookedSpots() {
         return parkingSpots.entrySet().stream()
@@ -197,24 +255,69 @@ public class ParkingLotManager {
                 .map(Map.Entry::getKey)
                 .toArray(String[]::new);
     }
+    
+    public String[] getSpotIds() {
+        return parkingSpots.keySet().toArray(new String[0]);
+    }
 
     public boolean isBooked(String spotId) {
         ParkingSpot spot = parkingSpots.get(spotId);
         return spot != null && spot.isBooked();
     }
 
-    public String[] getSpotIds() {
-        return parkingSpots.keySet().toArray(new String[0]);
-    }
-
     public void registerGUI(GUI gui) {
         this.gui = gui;
     }
 
-    public synchronized void notifyUser(String message) {
-        if (gui != null) {
-            gui.displayNotification(message);
+    public void notifyUser(String message) {
+        enqueueUserMessage(message);
+        showPopupMessage(message);  // Let showPopupMessage decide what to display
+    }
+    
+    private void showPopupMessage(String message) {
+        if (gui != null && (message.contains("Warning:") || message.contains("has expired"))) {
+            SwingUtilities.invokeLater(() -> {
+                JDialog dialog = new JDialog(gui, "Alert", true);
+                dialog.setSize(350, 150);
+                dialog.setLocationRelativeTo(gui);
+
+                JLabel label = new JLabel("<html><center>" + message + "</center></html>", SwingConstants.CENTER);
+                label.setFont(new Font("Arial", Font.BOLD, 14));
+                dialog.add(label, BorderLayout.CENTER);
+
+                JButton okButton = new JButton("OK");
+                okButton.addActionListener(e -> dialog.dispose());
+                JPanel buttonPanel = new JPanel();
+                buttonPanel.add(okButton);
+                dialog.add(buttonPanel, BorderLayout.SOUTH);
+
+                dialog.setVisible(true); // blocks only this dialog, not entire GUI
+            });
         }
+    }
+
+    public boolean trySoftLock(String spotId, String userId, long millis) {
+        ParkingSpot spot = parkingSpots.get(spotId);
+        if (spot == null) return false;
+
+        String status = getSpotStatus(spotId); // No userId — we check real-time view
+        if (!"available".equals(status)) return false; // ❗ Prevent locking system-reserved
+
+        boolean locked = spot.softLock(userId, millis);
+        if (locked) {
+            enqueueUpdate(spotId, "soft_locked");
+        }
+        return locked;
+    }
+
+    public void releaseSoftLock(String spotId, String userId) {
+        ParkingSpot spot = parkingSpots.get(spotId);
+        if (spot != null) spot.releaseSoftLock(userId);
+    }
+
+    public boolean isSoftLockedByAnotherUser(String spotId, String userId) {
+        ParkingSpot spot = parkingSpots.get(spotId);
+        return spot != null && spot.isSoftLockedByAnotherUser(userId);
     }
 
     public void registerListener(String spotId, Consumer<String> listener) {
@@ -222,26 +325,58 @@ public class ParkingLotManager {
     }
 
     public void notifyListeners(String spotId, String status) {
-        Consumer<String> listener = listeners.get(spotId);
-        if (listener != null) {
-            notificationExecutor.execute(() -> listener.accept(status));
-        }
-        if (gui != null) {
-            gui.updateSlotStatus(spotId, status);
-        }
+        enqueueUpdate(spotId, status);
+    }
+
+    // === Buffered Update System ===
+
+    private void enqueueUpdate(String spotId, String status) {
+        updateBuffer.offer(() -> {
+            cacheLock.lock();
+            try {
+                String current = spotStatusCache.get(spotId);
+                if (status.equals(current)) return; // ❗skip duplicate
+                spotStatusCache.put(spotId, status);
+            } finally {
+                cacheLock.unlock();
+            }
+
+            Consumer<String> listener = listeners.get(spotId);
+            if (listener != null) listener.accept(status);
+
+            if (gui != null) gui.updateSlotStatus(spotId, status);
+        });
+    }
+
+    private void enqueueUserMessage(String message) {
+        updateBuffer.offer(() -> {
+            if (gui != null) gui.displayNotification(message);
+        });
     }
     
+    public void forceCloseBookingDialogs() {
+        if (gui != null) {
+            gui.closeBookingDialogs(); // ✅ Delegates to GUI
+        }
+    }
+
+    // === BookingRequest Inner Class ===
     private static class ParkingRequest {
         final String spotId;
         final int hours;
+        final String label;
         final boolean isPriority;
         final CompletableFuture<Boolean> future;
+        final String userId; 
 
-        ParkingRequest(String spotId, int hours, boolean isPriority, CompletableFuture<Boolean> future) {
+        ParkingRequest(String spotId, int hours, String label, boolean isPriority, CompletableFuture<Boolean> future, String userId) {
             this.spotId = spotId;
             this.hours = hours;
+            this.label = label;
             this.isPriority = isPriority;
             this.future = future;
+            this.userId = userId;
         }
     }
+
 }

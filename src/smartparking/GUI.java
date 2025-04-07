@@ -2,370 +2,485 @@ package smartparking;
 
 import javax.swing.*;
 import java.awt.*;
-import java.awt.event.ActionEvent;
-import java.awt.event.ActionListener;
+import java.awt.event.*;
 import java.util.*;
 import java.util.Timer;
-import java.util.TimerTask;
 import java.util.concurrent.*;
 
 public class GUI extends JFrame {
     private JPanel mainPanel;
     private JTextArea notificationArea;
     private JPanel notificationPanel;
-    private boolean isNotificationVisible = false;
     private JButton notifyButton;
     private HashMap<String, JLabel> slotLabels;
     private ParkingLotManager parkingLotManager;
     private Timer notificationCleaner;
-    private Timer statusRefreshTimer;
-    private Set<String> userBookedSlots = new HashSet<>();
+    private Set<String> userBookedSlots = ConcurrentHashMap.newKeySet();
+    private final Map<String, String> lastSlotStatuses = new ConcurrentHashMap<>();
+    private final ExecutorService bookingExecutor = Executors.newSingleThreadExecutor();
+    private boolean isNotificationVisible = false;
+    private JDialog activeBookingDialog = null;
+    private JDialog activeConfirmationDialog = null;
+    private final String userId;
 
-    public GUI(ParkingLotManager manager) {
+    public GUI(ParkingLotManager manager, String userId) {
         this.parkingLotManager = manager;
+        this.userId = userId;
         setTitle("Smart Car Parking System");
         setSize(1400, 800);
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLayout(new BorderLayout(10, 10));
         slotLabels = new HashMap<>();
 
-        // ===== Title =====
         JLabel titleLabel = new JLabel("SMART CAR PARKING SYSTEM", SwingConstants.CENTER);
         titleLabel.setFont(new Font("Arial", Font.BOLD, 26));
-        titleLabel.setBorder(BorderFactory.createEmptyBorder(20, 0, 10, 0));
         add(titleLabel, BorderLayout.NORTH);
 
-        // ===== Legend Panel =====
-        JPanel legendPanel = createLegendPanel();
-        add(legendPanel, BorderLayout.WEST);
+        add(createLegendPanel(), BorderLayout.WEST);
 
-        // ===== Main Parking Area =====
         mainPanel = new JPanel();
         mainPanel.setLayout(new BoxLayout(mainPanel, BoxLayout.Y_AXIS));
+        createZonePanels();
+        createControlPanel();
+        add(mainPanel, BorderLayout.CENTER);
 
-        // Zone A
-        JPanel zoneA = new JPanel(new GridLayout(1, 14, 3, 3));
-        for (int i = 1; i <= 14; i++) {
-            JLabel label = createSpotLabel("A" + i, false);
-            zoneA.add(label);
-        }
+        setupNotificationPanel();
+        setupTimers();
+    }
+
+    private void createZonePanels() {
+        JPanel zoneA = new JPanel(new GridLayout(1, 14));
+        for (int i = 1; i <= 14; i++) zoneA.add(createSpotLabel("A" + i, false));
         mainPanel.add(zoneA);
 
-        // Zone B, C, D, E
         JPanel zoneBCDE = new JPanel(new GridLayout(1, 4, 20, 10));
-        zoneBCDE.add(createZonePanel("B", 12, true));
-        zoneBCDE.add(createZonePanel("C", 12, true));
-        zoneBCDE.add(createZonePanel("D", 12, true));
-        zoneBCDE.add(createZonePanel("E", 12, true));
+        for (String zone : new String[]{"B", "C", "D", "E"})
+            zoneBCDE.add(createZonePanel(zone, 12, true));
         mainPanel.add(zoneBCDE);
 
-        // Zone F
-        JPanel zoneF = new JPanel(new GridLayout(1, 14, 3, 3));
-        for (int i = 1; i <= 14; i++) {
-            JLabel label = createSpotLabel("F" + i, false);
-            zoneF.add(label);
-        }
+        JPanel zoneF = new JPanel(new GridLayout(1, 14));
+        for (int i = 1; i <= 14; i++) zoneF.add(createSpotLabel("F" + i, false));
         mainPanel.add(zoneF);
+    }
 
-        // ===== Control Panel =====
+    private void createControlPanel() {
         JPanel controlPanel = new JPanel(new GridLayout(2, 2, 10, 10));
-
-        // Create control buttons
         JButton bookButton = new JButton("Book Slot and Pay");
         JButton cancelButton = new JButton("Cancel Booking");
         JButton findButton = new JButton("Find Booked Slot");
         notifyButton = new JButton("Notifications");
 
-        // Add buttons to panel
         controlPanel.add(bookButton);
         controlPanel.add(cancelButton);
         controlPanel.add(findButton);
         controlPanel.add(notifyButton);
         mainPanel.add(controlPanel);
 
-        add(mainPanel, BorderLayout.CENTER);
+        bookButton.addActionListener(e -> handleBooking());
+        cancelButton.addActionListener(e -> handleCancellation());
+        findButton.addActionListener(e -> showBookedSlots());
+        notifyButton.addActionListener(e -> toggleNotificationPanel());
+    }
 
-        // ===== Button Listeners =====
-        bookButton.addActionListener(e -> {
-            String[] zones = {"A", "B", "C", "D", "E", "F"};
-            String selectedZone = (String) JOptionPane.showInputDialog(this, 
-                "Select Zone:", 
-                "Zone Selection", 
-                JOptionPane.QUESTION_MESSAGE, 
-                null, 
-                zones, 
-                zones[0]);
-            
-            if (selectedZone == null) return;
-            
-            String[] spotsInZone = parkingLotManager.getSpotsInZone(selectedZone);
-            Arrays.sort(spotsInZone, new Comparator<String>() {
-                public int compare(String s1, String s2) {
-                    return Integer.compare(
-                        Integer.parseInt(s1.substring(1)),
-                        Integer.parseInt(s2.substring(1))
-                    );
-                }
-            });
-            
-            String selectedSpot = (String) JOptionPane.showInputDialog(this, 
-                "Select Spot in Zone " + selectedZone + ":", 
-                "Spot Selection", 
-                JOptionPane.QUESTION_MESSAGE, 
-                null, 
-                spotsInZone, 
-                spotsInZone[0]);
-            
-            if (selectedSpot == null) return;
-            
-            String[] durations = {"30 minutes", "1 hour", "2 hours", "4 hours", "8 hours", "24 hours"};
-            String selectedDuration = (String) JOptionPane.showInputDialog(this, 
-                "Select Parking Duration:", 
-                "Duration Selection", 
-                JOptionPane.QUESTION_MESSAGE, 
-                null, 
-                durations, 
-                durations[0]);
-            
-            if (selectedDuration == null) return;
-            
-            double rate = 2.0;
-            int hours = getHoursFromDuration(selectedDuration);
-            double amount = rate * hours;
-            
-            int confirm = JOptionPane.showConfirmDialog(this, 
-                String.format("Book spot %s for %s?\nTotal amount: $%.2f", 
-                    selectedSpot, selectedDuration, amount), 
-                "Confirm Booking", 
-                JOptionPane.YES_NO_OPTION);
-            
-            if (confirm == JOptionPane.YES_OPTION) {
-            new Thread(() -> {
-                try {
-                    CompletableFuture<Boolean> bookingFuture = parkingLotManager.bookSpot(
-                        selectedSpot, hours, false);
-                    
-                    Boolean success = bookingFuture.get(10, TimeUnit.SECONDS);
-                    
-                    SwingUtilities.invokeLater(() -> {
-                        if (success) {
-                            userBookedSlots.add(selectedSpot);
-                            parkingLotManager.markAsUserBooked(selectedSpot); // Add this line
-                            JOptionPane.showMessageDialog(this, 
-                                String.format("Slot %s booked successfully!", selectedSpot));
-                        } else {
-                            JOptionPane.showMessageDialog(this, 
-                                "Booking failed. Please try another spot.");
-                        }
-                    });
-                } catch (Exception ex) {
-                    SwingUtilities.invokeLater(() -> 
-                        JOptionPane.showMessageDialog(this, 
-                            "Error: " + ex.getMessage()));
-                }
-            }).start();
-        }
-    });
-
-        // Find Booked Slot button listener
-        findButton.addActionListener(e -> {
-            if (userBookedSlots.isEmpty()) {
-                JOptionPane.showMessageDialog(this, "No spots are currently booked by you.");
-            } else {
-                StringBuilder message = new StringBuilder("Your Booked Spots:\n");
-                for (String spot : userBookedSlots) {
-                    message.append("- ").append(spot).append("\n");
-                }
-                JOptionPane.showMessageDialog(this, message.toString());
-            }
-        });
-
-        // Cancel Booking button listener
-        cancelButton.addActionListener(e -> {
-        if (userBookedSlots.isEmpty()) {
-            JOptionPane.showMessageDialog(this, "No spots are currently booked by you.");
+    private void handleBooking() {
+        if (parkingLotManager.userHasReachedLimit(userId)) {
+            JOptionPane.showMessageDialog(this,
+                "You have reached your booking limit.\nCancel a booking to proceed.",
+                "Limit Reached", JOptionPane.WARNING_MESSAGE);
             return;
         }
         
-        String[] bookedSpots = userBookedSlots.toArray(new String[0]);
-        String spotToCancel = (String) JOptionPane.showInputDialog(this, 
-            "Select Spot to Cancel:", 
-            "Cancel Booking", 
-            JOptionPane.QUESTION_MESSAGE, 
-            null, 
-            bookedSpots, 
-            bookedSpots[0]);
-        
-        if (spotToCancel != null) {
-            new Thread(() -> {
-                try {
-                    CompletableFuture<Boolean> cancelFuture = parkingLotManager.cancelBooking(spotToCancel);
-                    Boolean success = cancelFuture.get(5, TimeUnit.SECONDS);
-                    
-                    SwingUtilities.invokeLater(() -> {
-                        if (success) {
-                            userBookedSlots.remove(spotToCancel);
-                            parkingLotManager.markAsUserUnbooked(spotToCancel); // Add this line
-                            JOptionPane.showMessageDialog(this, 
-                                "Booking for " + spotToCancel + " canceled successfully.");
-                        } else {
-                            JOptionPane.showMessageDialog(this, 
-                                "Cancellation failed. Spot might not be booked.");
-                        }
-                    });
-                } catch (Exception ex) {
-                    SwingUtilities.invokeLater(() -> 
-                        JOptionPane.showMessageDialog(this, 
-                            "Cancellation error: " + ex.getMessage()));
-                }
-            }).start();
+        String selectedZone = showDropdown("Select Zone:", new String[]{"A", "B", "C", "D", "E", "F"});
+        if (selectedZone == null) {
+            displayNotification("Booking cancelled by user.");
+            return;
         }
-    });
 
-        // ===== Notification Panel =====
+        String[] spots = parkingLotManager.getSpotsInZone(selectedZone);
+        Arrays.sort(spots, Comparator.comparingInt(s -> Integer.parseInt(s.substring(1))));
+        String selectedSpot = showDropdown("Select Spot in Zone " + selectedZone + ":", spots);
+        if (selectedSpot == null) {
+            displayNotification("Booking cancelled by user.");
+            return;
+        }
+        
+        // Attempt to soft lock the slot for 60 seconds
+        if (!parkingLotManager.trySoftLock(selectedSpot, userId, 60000)) {
+            JOptionPane.showMessageDialog(this,
+                "Selected spot is currently reserved.",
+                "Reservation Error",
+                JOptionPane.WARNING_MESSAGE);
+            return;
+        }
+
+        // Recheck real-time status
+        if (!"available".equals(parkingLotManager.getSpotStatus(selectedSpot, userId))) {
+            JOptionPane.showMessageDialog(this,
+                "Selected spot is no longer available.",
+                "Reservation Error",
+                JOptionPane.WARNING_MESSAGE);
+            parkingLotManager.releaseSoftLock(selectedSpot, userId);
+            parkingLotManager.notifyListeners(selectedSpot, "available");
+            return;
+        }
+
+        // Enter booking duration and car plate number
+        JDialog bookingDialog = new JDialog(this, "Enter Booking Details", true);
+        activeBookingDialog = bookingDialog;
+        bookingDialog.setLayout(new BorderLayout());
+        bookingDialog.setPreferredSize(new Dimension(420, 200)); // Fixed size
+        bookingDialog.setResizable(false); // Prevents resizing
+
+        // Center Panel for input fields
+        JPanel inputPanel = new JPanel(new GridBagLayout());
+        GridBagConstraints gbc = new GridBagConstraints();
+        gbc.insets = new Insets(5, 5, 5, 5);
+        gbc.gridx = 0; gbc.gridy = 0; gbc.anchor = GridBagConstraints.EAST;
+        inputPanel.add(new JLabel("Select Duration:"), gbc);
+
+        JComboBox<String> durationBox = new JComboBox<>(new String[]{
+            "30 minutes", "1 hour", "2 hours", "4 hours", "8 hours", "24 hours"
+        });
+        gbc.gridx = 1; gbc.gridy = 0; gbc.anchor = GridBagConstraints.WEST;
+        inputPanel.add(durationBox, gbc);
+
+        gbc.gridx = 0; gbc.gridy = 1; gbc.anchor = GridBagConstraints.EAST;
+        inputPanel.add(new JLabel("Enter Car Plate:"), gbc);
+
+        JTextField carPlateField = new JTextField(12);
+        String tooltipText = "Enter 5–10 alphanumeric characters (e.g., ABC1234)";
+        carPlateField.setToolTipText(tooltipText);
+
+        // Show tooltip immediately on focus
+        carPlateField.addFocusListener(new FocusAdapter() {
+            @Override
+            public void focusGained(FocusEvent e) {
+                ToolTipManager.sharedInstance().setInitialDelay(0); // show immediately
+                ToolTipManager.sharedInstance().mouseMoved(
+                    new MouseEvent(carPlateField, 0, 0, 0, 1, 1, // dummy coords inside field
+                    0, false)
+                );
+            }
+        });
+        gbc.gridx = 1; gbc.gridy = 1; gbc.anchor = GridBagConstraints.WEST;
+        inputPanel.add(carPlateField, gbc);
+
+        // Error label
+        JLabel errorLabel = new JLabel("Car plate is required.");
+        errorLabel.setForeground(Color.RED);
+        errorLabel.setVisible(false);
+        gbc.gridx = 1; gbc.gridy = 2; gbc.anchor = GridBagConstraints.WEST;
+        inputPanel.add(errorLabel, gbc);
+
+        bookingDialog.add(inputPanel, BorderLayout.CENTER);
+
+        // South Panel for buttons
+        JPanel buttonPanel = new JPanel(new FlowLayout(FlowLayout.RIGHT));
+        JButton okButton = new JButton("OK");
+        JButton cancelButton = new JButton("Cancel");
+        buttonPanel.add(okButton);
+        buttonPanel.add(cancelButton);
+        bookingDialog.add(buttonPanel, BorderLayout.SOUTH);
+                    
+        final boolean[] submitted = {false};
+
+        okButton.addActionListener(e -> {
+            String carPlate = carPlateField.getText().trim().toUpperCase();
+            if (carPlate.isEmpty()) {
+                errorLabel.setText("Car plate is required.");
+                errorLabel.setVisible(true);
+            } else if (!carPlate.matches("^[A-Za-z0-9]{5,10}$")) {
+                errorLabel.setText("Invalid car plate (5–10 alphanumeric chars).");
+                errorLabel.setVisible(true);
+            } else {
+                errorLabel.setVisible(false);
+                submitted[0] = true;
+                bookingDialog.dispose();
+                activeBookingDialog = null;
+            }
+            inputPanel.revalidate();
+            inputPanel.repaint();
+        });
+
+        cancelButton.addActionListener(e -> bookingDialog.dispose());
+        bookingDialog.pack();
+        bookingDialog.setLocationRelativeTo(null);
+        bookingDialog.setVisible(true);
+        
+        if (!submitted[0]) {
+            displayNotification("Booking cancelled by user.");
+            parkingLotManager.releaseSoftLock(selectedSpot, userId);
+            parkingLotManager.notifyListeners(selectedSpot, "available");
+            return;
+        }
+
+        String selectedDuration = (String) durationBox.getSelectedItem();
+        String carPlate = carPlateField.getText().trim().toUpperCase();
+
+
+        // Calculate parking fees
+        int hours = getHoursFromDuration(selectedDuration);
+        double amount = hours * 2.0;
+
+        // Show fully non-blocking confirmation dialog (JDialog)
+        JDialog confirmDialog = new JDialog(this, "Confirm Booking", false);
+        activeConfirmationDialog = confirmDialog;
+        confirmDialog.setLayout(new BorderLayout());
+        confirmDialog.setSize(300, 150);
+        confirmDialog.setLocationRelativeTo(this);
+
+        JLabel message = new JLabel(
+            String.format("<html>Book spot %s for %s?<br>Total: $%.2f</html>", selectedSpot, selectedDuration, amount),
+            SwingConstants.CENTER);
+        confirmDialog.add(message, BorderLayout.CENTER);
+
+        JPanel buttons = new JPanel();
+        JButton yesBtn = new JButton("Confirm");
+        JButton cancelBtn = new JButton("Cancel");
+        buttons.add(yesBtn);
+        buttons.add(cancelBtn);
+        confirmDialog.add(buttons, BorderLayout.SOUTH);
+
+        yesBtn.addActionListener(e -> {
+            confirmDialog.dispose();
+            activeConfirmationDialog = null;
+
+            if (!"available".equals(parkingLotManager.getSpotStatus(selectedSpot, userId))) {
+                JOptionPane.showMessageDialog(this,
+                    "Selected spot is no longer available.",
+                    "Reservation Error",
+                    JOptionPane.WARNING_MESSAGE);
+                parkingLotManager.releaseSoftLock(selectedSpot, userId);
+                return;
+            }
+
+            displayNotification("Processing booking for " + selectedSpot + " (" + selectedDuration + ", $" + amount + ")");
+
+            // Non-blocking callback without get()
+            parkingLotManager.bookSpot(selectedSpot, hours, selectedDuration, false, userId)
+                .thenAccept(success -> {
+                    if (success) {
+                        SwingUtilities.invokeLater(() -> userBookedSlots.add(selectedSpot));
+                        parkingLotManager.markAsUserBooked(selectedSpot, userId, carPlate, selectedDuration);
+                    } else {
+                        parkingLotManager.releaseSoftLock(selectedSpot, userId);
+                        parkingLotManager.notifyListeners(selectedSpot, "available");
+                        parkingLotManager.notifyUser("Booking failed for " + selectedSpot);
+                    }
+                });
+            });
+
+        cancelBtn.addActionListener(e -> {
+            confirmDialog.dispose();
+            activeConfirmationDialog = null;
+            displayNotification("Booking cancelled by user.");
+            parkingLotManager.releaseSoftLock(selectedSpot, userId); 
+            parkingLotManager.notifyListeners(selectedSpot, "available");
+        });
+
+        confirmDialog.setVisible(true);
+    }
+
+    private void handleCancellation() {
+        // Clean up expired bookings
+        Set<String> expired = new HashSet<>();
+        for (String spot : userBookedSlots) {
+            if (!parkingLotManager.isBooked(spot)) {
+                expired.add(spot);
+            }
+        }
+        expired.forEach(spot -> {
+            parkingLotManager.markAsUserUnbooked(spot, userId);
+            userBookedSlots.remove(spot);
+        });
+
+        String[] bookedSpots = userBookedSlots.toArray(new String[0]);
+        if (bookedSpots.length == 0) {
+            SwingUtilities.invokeLater(() ->
+            JOptionPane.showMessageDialog(this, "No spots booked.", "Notice", JOptionPane.INFORMATION_MESSAGE)
+            );
+            return;
+        }
+
+        String spotToCancel = showDropdown("Select a spot to cancel:", bookedSpots);
+        if (spotToCancel == null) {
+            displayNotification("Cancellation cancelled by user.");
+            return;
+        }
+
+        displayNotification("Processing cancellation for " + spotToCancel);
+
+        // Use thenAccept directly (non-blocking)
+        parkingLotManager.cancelBooking(spotToCancel).thenAccept(success -> {
+            System.out.println("Cancel task completed for " + spotToCancel + ": " + success); // ✅ Debug line
+            if (success) {
+                // Use Swing thread only for UI-related changes
+                SwingUtilities.invokeLater(() -> userBookedSlots.remove(spotToCancel));
+                parkingLotManager.markAsUserUnbooked(spotToCancel, userId);
+                // Let the manager queue handle notifyUser and notifyListeners safely
+            } else {
+                parkingLotManager.notifyUser("Cancellation failed for " + spotToCancel);
+            }
+        });
+    }
+
+    private String showDropdown(String title, String[] options) {
+    JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT));
+    JComboBox<String> comboBox = new JComboBox<>(options);
+    panel.add(new JLabel(title));
+    panel.add(comboBox);
+
+    int result = JOptionPane.showConfirmDialog(this, panel, title, JOptionPane.OK_CANCEL_OPTION);
+    return result == JOptionPane.OK_OPTION ? (String) comboBox.getSelectedItem() : null;
+    }
+    
+    // Method to auto close dialogs upon soft lock expiry
+    public void closeBookingDialogs() {
+        if (activeBookingDialog != null) {
+            SwingUtilities.invokeLater(() -> {
+                activeBookingDialog.dispose();
+                activeBookingDialog = null;
+            });
+        }
+        if (activeConfirmationDialog != null) {
+            SwingUtilities.invokeLater(() -> {
+                activeConfirmationDialog.dispose();
+                activeConfirmationDialog = null;
+            });
+        }
+    }
+    
+    
+    private void showBookedSlots() {
+        Map<String, String> bookings = parkingLotManager.getUserBookings(userId);
+
+        // Remove expired slots
+        Set<String> expired = new HashSet<>();
+        for (String spot : bookings.keySet()) {
+            if (!parkingLotManager.isBooked(spot)) {
+                expired.add(spot);
+            }
+        }
+
+        // Remove expired bookings from system
+        expired.forEach(spot -> {
+            parkingLotManager.markAsUserUnbooked(spot, userId);
+            userBookedSlots.remove(spot); // clean up local tracking
+        });
+        bookings.keySet().removeAll(expired); // remove from display
+
+        if (bookings.isEmpty()) {
+            JOptionPane.showMessageDialog(this, "No active bookings found.");
+            return;
+        }
+
+        StringBuilder message = new StringBuilder("Your Active Bookings:\n");
+        for (Map.Entry<String, String> entry : bookings.entrySet()) {
+            message.append("- Spot: ").append(entry.getKey()).append("\n  ").append(entry.getValue()).append("\n");
+        }
+
+        JOptionPane.showMessageDialog(this, message.toString());
+    }
+
+    private void toggleNotificationPanel() {
+        isNotificationVisible = !notificationPanel.isVisible();
+        notificationPanel.setVisible(isNotificationVisible);
+        revalidate();
+        repaint();
+    }
+
+    private void setupNotificationPanel() {
         notificationPanel = new JPanel(new BorderLayout());
-        notificationPanel.setBorder(BorderFactory.createLineBorder(Color.GRAY));
+        notificationPanel.setBorder(BorderFactory.createLineBorder(Color.BLACK));
         notificationPanel.setPreferredSize(new Dimension(250, getHeight()));
         JLabel notifTitle = new JLabel("Notifications", SwingConstants.CENTER);
         notifTitle.setFont(new Font("Arial", Font.BOLD, 16));
         notificationPanel.add(notifTitle, BorderLayout.NORTH);
 
-        notificationArea = new JTextArea();
+        notificationArea = new JTextArea("No notifications for now.");
         notificationArea.setEditable(false);
-        notificationArea.setText("No notifications for now.");
         notificationPanel.add(new JScrollPane(notificationArea), BorderLayout.CENTER);
         notificationPanel.setVisible(false);
         add(notificationPanel, BorderLayout.EAST);
+    }
 
-        // Notification cleaner timer
+    private void setupTimers() {
         notificationCleaner = new Timer();
         notificationCleaner.scheduleAtFixedRate(new TimerTask() {
-            @Override
             public void run() {
                 notificationArea.setText("No notifications for now.");
             }
         }, 24 * 60 * 60 * 1000, 24 * 60 * 60 * 1000);
-
-        // Status refresh timer
-        statusRefreshTimer = new Timer();
-        statusRefreshTimer.scheduleAtFixedRate(new TimerTask() {
-            @Override
-            public void run() {
-                refreshAllSlotStatuses();
-            }
-        }, 0, 2000); // Refresh every 2 seconds
-
-        notifyButton.addActionListener(e -> {
-            isNotificationVisible = !isNotificationVisible;
-            notificationPanel.setVisible(isNotificationVisible);
-            revalidate();
-            repaint();
-        });
     }
 
-    private void refreshAllSlotStatuses() {
-        for (String spotId : slotLabels.keySet()) {
-            String status = parkingLotManager.getSpotStatus(spotId);
-            SwingUtilities.invokeLater(() -> updateSlotStatus(spotId, status));
-        }
-    }
-
-    public Set<String> getUserBookedSlots() {
-        return userBookedSlots;
-    }
-    
     public void displayNotification(String message) {
-        if (!message.startsWith("Warning:")) { // Filter out warning notifications
-            if (notificationArea.getText().equals("No notifications for now.")) {
-                notificationArea.setText(message);
-            } else {
-                notificationArea.append("\n" + message);
-            }
-        }
+        if ("No notifications for now.".equals(notificationArea.getText()))
+            notificationArea.setText(message);
+        else
+            notificationArea.append("\n" + message);
     }
 
     private JPanel createZonePanel(String zone, int count, boolean vertical) {
         JPanel panel = new JPanel(new GridLayout(count / 2, 2, 3, 3));
-        for (int i = 1; i <= count; i++) {
-            JLabel label = createSpotLabel(zone + i, vertical);
-            panel.add(label);
-        }
+        for (int i = 1; i <= count; i++) panel.add(createSpotLabel(zone + i, vertical));
         return panel;
     }
 
     private JLabel createSpotLabel(String spotId, boolean vertical) {
         JLabel label = new JLabel();
         label.setLayout(new BorderLayout());
-
         JLabel text = new JLabel(spotId, SwingConstants.CENTER);
         text.setFont(new Font("Arial", Font.BOLD, 12));
-        if (vertical) {
-            label.add(text, BorderLayout.WEST);
-        } else {
-            label.add(text, BorderLayout.NORTH);
-        }
+        label.add(text, vertical ? BorderLayout.WEST : BorderLayout.NORTH);
         label.setPreferredSize(new Dimension(60, 50));
-        label.setBorder(BorderFactory.createLineBorder(Color.GRAY));
+        label.setBorder(BorderFactory.createLineBorder(Color.BLACK));
         label.setOpaque(true);
         label.setBackground(Color.WHITE);
-
         slotLabels.put(spotId, label);
         return label;
     }
 
     public void updateSlotStatus(String spotId, String status) {
+        String currentStatus = lastSlotStatuses.get(spotId);
+
+        // Improved duplicate status check to prevent UI loops
+        if (currentStatus != null && currentStatus.equals(status)) {
+            System.out.println("Skipped UI update for " + spotId + " (same status: " + status + ")");
+            return;
+        }
+
+        // Update the cache before UI repaint to avoid loops
+        lastSlotStatuses.put(spotId, status);
+
         JLabel slot = slotLabels.get(spotId);
         if (slot == null) return;
 
-        slot.setBackground(Color.WHITE);
-        slot.removeAll();
+        SwingUtilities.invokeLater(() -> {
+            System.out.println("Updating UI slot " + spotId + " to " + status); // Debug line
+            slot.removeAll();
+            slot.setBackground(Color.WHITE);
+            JLabel text = new JLabel(spotId, SwingConstants.CENTER);
+            text.setFont(new Font("Arial", Font.BOLD, 12));
 
-        JLabel text = new JLabel(spotId, SwingConstants.CENTER);
-        text.setFont(new Font("Arial", Font.BOLD, 12));
+            switch (status) {
+                case "reserved": slot.setBackground(Color.GRAY); break;
+                case "reserved_occupied": slot.setBackground(Color.GRAY); addCarIcon(slot); break;
+                case "time_exceeded": slot.setBackground(Color.ORANGE); addCarIcon(slot); break;
+                case "booked": slot.setBackground(Color.GREEN); break;
+                case "booked_occupied":
+                    if (userBookedSlots.contains(spotId)) {
+                        slot.setBackground(Color.GREEN); addCarIcon(slot);
+                    }
+                    break;
+                case "wrong_parking": slot.setBackground(Color.RED); addCarIcon(slot); break;
+                case "soft_locked": slot.setBackground(Color.LIGHT_GRAY); break;
+                default: slot.setBackground(Color.WHITE);
+            }
 
-        switch (status) {
-            case "reserved":
-                slot.setBackground(new Color(100, 100, 100)); // Dark gray for reserved
-                break;
-            case "reserved_occupied":
-                slot.setBackground(new Color(100, 100, 100)); // Dark gray + car icon
-                addCarIcon(slot);
-                break;
-            case "time_exceeded":
-                slot.setBackground(Color.ORANGE);
-                addCarIcon(slot);
-                break;
-            case "booked":
-                // Only green if user booked it
-                if (userBookedSlots.contains(spotId)) {
-                    slot.setBackground(Color.GREEN);
-                } 
-                break;
-            case "booked_occupied":
-                // Only green if user booked it
-                if (userBookedSlots.contains(spotId)) {
-                    slot.setBackground(Color.GREEN);
-                } 
-                addCarIcon(slot);
-                break;
-            case "wrong_parking":
-                slot.setBackground(Color.RED);
-                addCarIcon(slot);
-                break;
-            case "available":
-                slot.setBackground(Color.WHITE);
-                break;
-        }
-
-
-        if (spotId.startsWith("B") || spotId.startsWith("C") || spotId.startsWith("D") || spotId.startsWith("E")) {
-            slot.add(text, BorderLayout.WEST);
-        } else {
-            slot.add(text, BorderLayout.NORTH);
-        }
-
-        slot.revalidate();
-        slot.repaint();
+            slot.add(text, spotId.matches("[BCDE].*") ? BorderLayout.WEST : BorderLayout.NORTH);
+            slot.revalidate();
+            slot.repaint();
+        });
     }
 
     private void addCarIcon(JLabel label) {
@@ -382,6 +497,7 @@ public class GUI extends JFrame {
 
         legend.add(createLegendRow(Color.WHITE, null, "Available"));
         legend.add(createLegendRow(Color.GRAY, null, "Reserved"));
+        legend.add(createLegendRow(Color.LIGHT_GRAY, null, "Soft Locked"));
         legend.add(createLegendRow(Color.ORANGE, null, "Time Limit Exceeded"));
         legend.add(createLegendRow(Color.GREEN, null, "Your Booked Slot"));
         legend.add(createLegendRow(Color.RED, null, "Wrong Parking"));
@@ -393,7 +509,6 @@ public class GUI extends JFrame {
     private JPanel createLegendRow(Color color, String iconPath, String desc) {
         JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
         row.setAlignmentX(Component.LEFT_ALIGNMENT);
-
         if (color != null) {
             JLabel colorBox = new JLabel();
             colorBox.setPreferredSize(new Dimension(20, 20));
@@ -402,29 +517,25 @@ public class GUI extends JFrame {
             colorBox.setBorder(BorderFactory.createLineBorder(Color.BLACK));
             row.add(colorBox);
         }
-
         if (iconPath != null) {
             ImageIcon icon = new ImageIcon(iconPath);
             Image img = icon.getImage().getScaledInstance(30, 30, Image.SCALE_SMOOTH);
             JLabel iconLabel = new JLabel(new ImageIcon(img));
             row.add(iconLabel);
         }
-
         JLabel descLabel = new JLabel(desc);
         row.add(descLabel);
-
         return row;
     }
 
     private int getHoursFromDuration(String duration) {
-        switch (duration) {
-            case "30 minutes": return 1;
-            case "1 hour": return 1;
-            case "2 hours": return 2;
-            case "4 hours": return 4;
-            case "8 hours": return 8;
-            case "24 hours": return 24;
-            default: return 1;
-        }
+        return switch (duration) {
+            case "30 minutes", "1 hour" -> 1;
+            case "2 hours" -> 2;
+            case "4 hours" -> 4;
+            case "8 hours" -> 8;
+            case "24 hours" -> 24;
+            default -> 1;
+        };
     }
 }

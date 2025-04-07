@@ -3,6 +3,7 @@ package smartparking;
 import java.util.Timer;
 import java.util.TimerTask;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.Objects;
 
 public class ParkingSpot {
     private final String id;
@@ -10,7 +11,11 @@ public class ParkingSpot {
     private volatile Timer timer;
     private volatile long expirationTime;
     private final ParkingLotManager manager;
-
+    private volatile boolean softLocked = false;
+    private volatile long softLockExpiry = 0;
+    private volatile String lockedByUserId = null;
+    private volatile String bookedByUserId = null;
+    
     public ParkingSpot(String id, ParkingLotManager manager) {
         this.id = id;
         this.booked = new AtomicBoolean(false);
@@ -25,13 +30,16 @@ public class ParkingSpot {
         return booked.get();
     }
 
-    public boolean book(int hours) {
-        if (!booked.compareAndSet(false, true)) {
-            return false;
-        }
-        
-        this.expirationTime = System.currentTimeMillis() + hours * 60 * 60 * 1000;
-        startTimers(hours);
+    public boolean book(long millis, String userId) {
+        if (!booked.compareAndSet(false, true)) return false;
+
+        softLocked = false;
+        softLockExpiry = 0;
+        lockedByUserId = null;
+        this.bookedByUserId = userId;
+
+        this.expirationTime = System.currentTimeMillis() + millis;
+        startTimers(millis);
         return true;
     }
 
@@ -50,33 +58,88 @@ public class ParkingSpot {
         }
         return false;
     }
+    
+    public synchronized boolean softLock(String userId, long durationMillis) {
+    long now = System.currentTimeMillis();
+    
+    if (!softLocked || now >= softLockExpiry || userId.equals(lockedByUserId)) {
+        softLocked = true;
+        softLockExpiry = now + durationMillis;
+        lockedByUserId = userId;
 
-    private synchronized void startTimers(int hours) {
-        Timer t = timer;
-        if (t != null) {
-            t.cancel();
+        // Schedule automatic release of soft lock
+        new Timer(true).schedule(new TimerTask() {
+            public void run() {
+                synchronized (ParkingSpot.this) {
+                    if (softLocked && System.currentTimeMillis() >= softLockExpiry &&
+                        userId.equals(lockedByUserId) && !booked.get()) {
+                        
+                        releaseSoftLock(userId);
+                        manager.notifyUser("Your hold on " + id + " has expired.");
+                        manager.forceCloseBookingDialogs();
+                        manager.notifyListeners(id, "available");  // GUI will repaint
+                    }
+                }
+            }
+        }, durationMillis);
+
+        return true;
+    }
+
+    return false;
+}
+
+
+    public synchronized void releaseSoftLock(String userId) {
+        if (userId.equals(lockedByUserId)) {
+            softLocked = false;
+            softLockExpiry = 0;
+            lockedByUserId = null;
         }
-        
+    }
+
+    public boolean isSoftLocked(String userId) {
+        return softLocked && System.currentTimeMillis() < softLockExpiry && userId.equals(lockedByUserId);
+    }
+
+    public synchronized boolean isSoftLockedByAnotherUser(String userId) {
+        if (!softLocked || System.currentTimeMillis() >= softLockExpiry) return false;
+
+        // Handle null userId: system simulation has no identity, so treat as different user
+        return userId == null || !userId.equals(lockedByUserId);
+    }
+
+    public boolean isSoftLockedBy(String userId) {
+        return softLocked && Objects.equals(this.lockedByUserId, userId) && System.currentTimeMillis() < softLockExpiry;
+    }
+
+    public boolean isSoftLocked() {
+        return softLocked && System.currentTimeMillis() < softLockExpiry;
+    }
+
+    private synchronized void startTimers(long millis) {
+        if (timer != null) timer.cancel();
         timer = new Timer(true);
-        
-        // Warning timer
+
+        long warningDelay = Math.max(0, millis - (15 * 60 * 1000)); // 15 minutes before end
+
         timer.schedule(new TimerTask() {
-            @Override
             public void run() {
                 manager.notifyUser("Warning: Booking for spot " + id + " expires in 15 minutes");
             }
-        }, Math.max(0, (hours * 60L - 15) * 60 * 1000));
+        }, warningDelay);
 
-        // Expiration timer
         timer.schedule(new TimerTask() {
-            @Override
             public void run() {
                 if (cancelBooking()) {
+                    if (bookedByUserId != null) {
+                        manager.markAsUserUnbooked(id, bookedByUserId);
+                    }
                     manager.notifyListeners(id, "available");
                     manager.notifyUser("Booking for spot " + id + " has expired");
                 }
             }
-        }, hours * 60 * 60 * 1000);
+        }, millis);
     }
 
     public long getRemainingTime() {
