@@ -33,6 +33,7 @@ public class ParkingLotManager {
     private final Map<String, Map<String, String>> userBookingDetails = new ConcurrentHashMap<>();
     private final Map<String, UserProfile> userProfiles = new ConcurrentHashMap<>();
     private final Map<String, Set<String>> userBookings = new ConcurrentHashMap<>();
+    private final Map<String, Long> lastUpdateTimes = new ConcurrentHashMap<>();
 
     private GUI gui;
 
@@ -277,21 +278,26 @@ public class ParkingLotManager {
     private void showPopupMessage(String message) {
         if (gui != null && (message.contains("Warning:") || message.contains("has expired"))) {
             SwingUtilities.invokeLater(() -> {
-                JDialog dialog = new JDialog(gui, "Alert", true);
-                dialog.setSize(350, 150);
-                dialog.setLocationRelativeTo(gui);
+                try {
+                    JDialog dialog = new JDialog(gui, "Alert", true);
+                    dialog.setSize(350, 150);
+                    dialog.setLocationRelativeTo(gui);
 
-                JLabel label = new JLabel("<html><center>" + message + "</center></html>", SwingConstants.CENTER);
-                label.setFont(new Font("Arial", Font.BOLD, 14));
-                dialog.add(label, BorderLayout.CENTER);
+                    JLabel label = new JLabel("<html><center>" + message + "</center></html>", SwingConstants.CENTER);
+                    label.setFont(new Font("Arial", Font.BOLD, 14));
+                    dialog.add(label, BorderLayout.CENTER);
 
-                JButton okButton = new JButton("OK");
-                okButton.addActionListener(e -> dialog.dispose());
-                JPanel buttonPanel = new JPanel();
-                buttonPanel.add(okButton);
-                dialog.add(buttonPanel, BorderLayout.SOUTH);
+                    JButton okButton = new JButton("OK");
+                    okButton.addActionListener(e -> dialog.dispose());
+                    JPanel buttonPanel = new JPanel();
+                    buttonPanel.add(okButton);
+                    dialog.add(buttonPanel, BorderLayout.SOUTH);
 
-                dialog.setVisible(true); // blocks only this dialog, not entire GUI
+                    dialog.setVisible(true);
+                } catch (Exception ex) {
+                    System.err.println("⚠️ Failed to show popup message: " + ex.getMessage());
+                    ex.printStackTrace();
+                }
             });
         }
     }
@@ -331,6 +337,18 @@ public class ParkingLotManager {
     // === Buffered Update System ===
 
     private void enqueueUpdate(String spotId, String status) {
+        long now = System.currentTimeMillis();
+        long lastUpdate = lastUpdateTimes.getOrDefault(spotId, 0L);
+
+        // Skip if update is too soon for this slot (less than 0.5 seconds)
+        if (now - lastUpdate < 500) {
+            System.out.println("Throttled UI update for " + spotId + " (" + status + ")");
+            return;
+        }
+
+        // Update the timestamp
+        lastUpdateTimes.put(spotId, now);
+        
         updateBuffer.offer(() -> {
             cacheLock.lock();
             try {

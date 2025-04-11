@@ -69,7 +69,12 @@ public class GUI extends JFrame {
         JButton cancelButton = new JButton("Cancel Booking");
         JButton findButton = new JButton("Find Booked Slot");
         notifyButton = new JButton("Notifications");
-
+        Font buttonFont = new Font("Arial", Font.PLAIN, 18);
+        bookButton.setFont(buttonFont);
+        cancelButton.setFont(buttonFont);
+        findButton.setFont(buttonFont);
+        notifyButton.setFont(buttonFont);
+        
         controlPanel.add(bookButton);
         controlPanel.add(cancelButton);
         controlPanel.add(findButton);
@@ -430,7 +435,7 @@ public class GUI extends JFrame {
         JLabel label = new JLabel();
         label.setLayout(new BorderLayout());
         JLabel text = new JLabel(spotId, SwingConstants.CENTER);
-        text.setFont(new Font("Arial", Font.BOLD, 12));
+        text.setFont(new Font("Arial", Font.BOLD, 16));
         label.add(text, vertical ? BorderLayout.WEST : BorderLayout.NORTH);
         label.setPreferredSize(new Dimension(60, 50));
         label.setBorder(BorderFactory.createLineBorder(Color.BLACK));
@@ -456,30 +461,37 @@ public class GUI extends JFrame {
         if (slot == null) return;
 
         SwingUtilities.invokeLater(() -> {
-            System.out.println("Updating UI slot " + spotId + " to " + status); // Debug line
-            slot.removeAll();
-            slot.setBackground(Color.WHITE);
-            JLabel text = new JLabel(spotId, SwingConstants.CENTER);
-            text.setFont(new Font("Arial", Font.BOLD, 12));
+            try {
+                System.out.println("Updating UI slot " + spotId + " to " + status);
+                slot.removeAll();
+                slot.setBackground(Color.WHITE);
+                JLabel text = new JLabel(spotId, SwingConstants.CENTER);
+                text.setFont(new Font("Arial", Font.BOLD, 16));
 
-            switch (status) {
-                case "reserved": slot.setBackground(Color.GRAY); break;
-                case "reserved_occupied": slot.setBackground(Color.GRAY); addCarIcon(slot); break;
-                case "time_exceeded": slot.setBackground(Color.ORANGE); addCarIcon(slot); break;
-                case "booked": slot.setBackground(Color.GREEN); break;
-                case "booked_occupied":
-                    if (userBookedSlots.contains(spotId)) {
-                        slot.setBackground(Color.GREEN); addCarIcon(slot);
+                switch (status) {
+                    case "reserved" -> slot.setBackground(Color.GRAY);
+                    case "reserved_occupied" -> { slot.setBackground(Color.GRAY); addCarIcon(slot); }
+                    case "time_exceeded" -> { slot.setBackground(Color.ORANGE); addCarIcon(slot); }
+                    case "booked" -> slot.setBackground(Color.GREEN);
+                    case "booked_occupied" -> {
+                        if (userBookedSlots.contains(spotId)) {
+                            slot.setBackground(Color.GREEN); addCarIcon(slot);
+                        }
                     }
-                    break;
-                case "wrong_parking": slot.setBackground(Color.RED); addCarIcon(slot); break;
-                case "soft_locked": slot.setBackground(Color.LIGHT_GRAY); break;
-                default: slot.setBackground(Color.WHITE);
-            }
+                    case "wrong_parking" -> { slot.setBackground(Color.RED); addCarIcon(slot); }
+                    case "soft_locked" -> slot.setBackground(Color.LIGHT_GRAY);
+                    default -> slot.setBackground(Color.WHITE);
+                }
 
-            slot.add(text, spotId.matches("[BCDE].*") ? BorderLayout.WEST : BorderLayout.NORTH);
-            slot.revalidate();
-            slot.repaint();
+                slot.add(text, spotId.matches("[BCDE].*") ? BorderLayout.WEST : BorderLayout.NORTH);
+                slot.revalidate();
+                slot.repaint();
+
+            } catch (Exception ex) {
+                System.err.println("⚠️ UI update failed for slot " + spotId + ": " + ex.getMessage());
+                ex.printStackTrace();
+                displayNotification("UI update error on " + spotId);
+            }
         });
     }
 
@@ -525,6 +537,7 @@ public class GUI extends JFrame {
         }
         JLabel descLabel = new JLabel(desc);
         row.add(descLabel);
+        descLabel.setFont(new Font("Arial", Font.PLAIN, 14));
         return row;
     }
 
