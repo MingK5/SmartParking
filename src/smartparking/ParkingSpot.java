@@ -31,6 +31,7 @@ public class ParkingSpot {
     }
 
     public boolean book(long millis, String userId) {
+        if (userId == null) return false;
         if (!booked.compareAndSet(false, true)) return false;
 
         softLocked = false;

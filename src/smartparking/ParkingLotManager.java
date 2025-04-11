@@ -208,7 +208,7 @@ public class ParkingLotManager {
             ParkingSpot spot = parkingSpots.get(request.spotId);
             long millis = "30 minutes".equals(request.label) ? 30 * 60 * 1000L : request.hours * 60L * 60 * 1000L;
             boolean success = spot != null && spot.book(millis, request.userId);
-
+ 
             if (success) {
                 bookingsProcessed.incrementAndGet();
                 enqueueUpdate(request.spotId, "booked"); // remove conditional reserved/booked logic

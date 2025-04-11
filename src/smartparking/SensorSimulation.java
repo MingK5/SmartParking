@@ -43,16 +43,11 @@ public class SensorSimulation {
 
     private String determineStatus(String currentStatus) {
         double rand = random.nextDouble();
-
+        
         if (currentStatus.equals("available")) {
             if (rand < 0.05) return "reserved";
             else if (rand < 0.20) return "reserved_occupied";
-        } else {
-            if (rand < 0.40) return "reserved";
-            else if (rand < 0.60) return "reserved_occupied";
-            else if (rand < 0.80) return "time_exceeded";
-            else return "wrong_parking";
-        }
+        } 
         return null;
     }
 
