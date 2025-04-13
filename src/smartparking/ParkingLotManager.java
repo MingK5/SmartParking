@@ -146,6 +146,11 @@ public class ParkingLotManager {
         }
     }
     
+    public Set<String> getAllUserIds() {
+        return userBookings.keySet();
+    }
+
+    
     public boolean isSoftLocked(String spotId) {
         ParkingSpot spot = parkingSpots.get(spotId);
         return spot != null && spot.isSoftLocked();
@@ -212,14 +217,20 @@ public class ParkingLotManager {
  
             if (success) {
                 bookingsProcessed.incrementAndGet();
-                enqueueUpdate(request.spotId, "booked"); // remove conditional reserved/booked logic
-                String readable = "1 hour";
+                if (!"system".equals(request.userId)) {
+                    enqueueUpdate(request.spotId, "booked"); // user-booked = green
+                    // Existing readable duration logic
+                    String readable = "1 hour";
                     if ("30 minutes".equals(request.label)) {
                         readable = "30 minutes";
                     } else if (request.hours > 1) {
                         readable = request.hours + " hours";
                     }
-                enqueueUserMessage("Slot " + request.spotId + " booked for " + readable + ".");
+                    enqueueUserMessage("Slot " + request.spotId + " booked for " + readable + ".");
+                } else {
+                    enqueueUpdate(request.spotId, "reserved"); // system-booked = gray
+                    enqueueUserMessage("Slot " + request.spotId + " reserved.");
+                }
             } else {
                 failedBookings.incrementAndGet();
                 enqueueUpdate(request.spotId, "available"); // reset only on failure
@@ -374,7 +385,50 @@ public class ParkingLotManager {
     
     public void forceCloseBookingDialogs() {
         if (gui != null) {
-            gui.closeBookingDialogs(); // ✅ Delegates to GUI
+            gui.closeBookingDialogs(); // Delegates to GUI
+        }
+    }
+    
+    public void promptUserToAcknowledgeExpiry(String spotId, String userId) {
+        enqueueUpdate(spotId, "time_exceeded"); // in case missed earlier
+
+        SwingUtilities.invokeLater(() -> {
+            try {
+                JDialog dialog = new JDialog(gui, "Booking Expired", true);
+                dialog.setSize(350, 160);
+                dialog.setLocationRelativeTo(gui);
+
+                JLabel label = new JLabel("<html><center>Booking for spot " + spotId + " has expired.<br>Please acknowledge to release the spot.</center></html>", SwingConstants.CENTER);
+                label.setFont(new Font("Arial", Font.BOLD, 14));
+                dialog.add(label, BorderLayout.CENTER);
+
+                JButton okButton = new JButton("OK");
+                okButton.addActionListener(e -> {
+                    dialog.dispose();
+                    cleanupAfterExpiry(spotId, userId);
+                });
+
+                JPanel buttonPanel = new JPanel();
+                buttonPanel.add(okButton);
+                dialog.add(buttonPanel, BorderLayout.SOUTH);
+
+                dialog.setVisible(true);
+            } catch (Exception ex) {
+                System.err.println("⚠️ Failed to prompt expiry acknowledgment for " + spotId);
+                ex.printStackTrace();
+            }
+        });
+    }
+    
+    private void cleanupAfterExpiry(String spotId, String userId) {
+        ParkingSpot spot = parkingSpots.get(spotId);
+        if (spot != null) {
+            spot.cancelBooking(); // clear booking state
+            if (userId != null && !"system".equals(userId)) {
+                markAsUserUnbooked(spotId, userId);
+            }
+            notifyListeners(spotId, "available"); // white slot
+            notifyUser("Spot " + spotId + " is now available.");
         }
     }
 

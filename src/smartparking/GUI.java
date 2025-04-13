@@ -6,6 +6,11 @@ import java.awt.event.*;
 import java.util.*;
 import java.util.Timer;
 import java.util.concurrent.*;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.io.File;
+import java.util.ArrayList;
+import java.util.List;
 
 public class GUI extends JFrame {
     private JPanel mainPanel;
@@ -22,6 +27,8 @@ public class GUI extends JFrame {
     private JDialog activeBookingDialog = null;
     private JDialog activeConfirmationDialog = null;
     private final String userId;
+    private List<String> notificationMessages = new ArrayList<>();
+    private static final int MAX_NOTIFICATIONS = 20;
 
     public GUI(ParkingLotManager manager, String userId) {
         this.parkingLotManager = manager;
@@ -259,7 +266,7 @@ public class GUI extends JFrame {
                 return;
             }
 
-            displayNotification("Processing booking for " + selectedSpot + " (" + selectedDuration + ", $" + amount + ")");
+            displayNotification("Processing booking for slot " + selectedSpot);
 
             // Non-blocking callback without get()
             parkingLotManager.bookSpot(selectedSpot, hours, selectedDuration, false, userId)
@@ -288,15 +295,10 @@ public class GUI extends JFrame {
 
     private void handleCancellation() {
         // Clean up expired bookings
-        Set<String> expired = new HashSet<>();
-        for (String spot : userBookedSlots) {
-            if (!parkingLotManager.isBooked(spot)) {
-                expired.add(spot);
-            }
-        }
-        expired.forEach(spot -> {
-            parkingLotManager.markAsUserUnbooked(spot, userId);
-            userBookedSlots.remove(spot);
+        userBookedSlots.removeIf(spot -> {
+            boolean expired = !parkingLotManager.isBooked(spot);
+            if (expired) parkingLotManager.markAsUserUnbooked(spot, userId);
+            return expired;
         });
 
         String[] bookedSpots = userBookedSlots.toArray(new String[0]);
@@ -419,13 +421,25 @@ public class GUI extends JFrame {
     }
 
     public void displayNotification(String message) {
-        if ("No notifications for now.".equals(notificationArea.getText()))
-            notificationArea.setText(message);
-        else
-            notificationArea.append("\n" + message);
+        // Get the current timestamp
+        LocalDateTime now = LocalDateTime.now();
+        DateTimeFormatter formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
+        String timestamp = now.format(formatter);
+
+        // Prepend the timestamp to the notification message
+        String formattedMessage = "|" + timestamp + "| " + message;
+
+        // Add the message to the list and ensure the max limit
+        notificationMessages.add(0, formattedMessage); // Add to the top
+        if (notificationMessages.size() > MAX_NOTIFICATIONS) {
+            notificationMessages.remove(notificationMessages.size() - 1); // Remove the oldest message
+        }
+
+        // Update the notification area
+        notificationArea.setText(String.join("\n", notificationMessages));
     }
 
-    private JPanel createZonePanel(String zone, int count, boolean vertical) {
+    private JPanel createZonePanel(String zone, int count, boolean vertical){
         JPanel panel = new JPanel(new GridLayout(count / 2, 2, 3, 3));
         for (int i = 1; i <= count; i++) panel.add(createSpotLabel(zone + i, vertical));
         return panel;
@@ -552,3 +566,4 @@ public class GUI extends JFrame {
         };
     }
 }
+

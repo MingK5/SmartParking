@@ -133,11 +133,11 @@ public class ParkingSpot {
         timer.schedule(new TimerTask() {
             public void run() {
                 if (cancelBooking()) {
-                    if (bookedByUserId != null) {
+                    if (bookedByUserId != null && !"system".equals(bookedByUserId)) {
                         manager.markAsUserUnbooked(id, bookedByUserId);
                     }
-                    manager.notifyListeners(id, "available");
-                    manager.notifyUser("Booking for spot " + id + " has expired");
+                    manager.notifyListeners(id, "time_exceeded"); // Show orange + car icon
+                    manager.promptUserToAcknowledgeExpiry(id, bookedByUserId); // Wait for OK before releasing
                 }
             }
         }, millis);
