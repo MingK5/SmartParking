@@ -59,7 +59,7 @@ public class UserSimulation {
                 .toArray(String[]::new);
 
         if (systemBooked.length == 0 || random.nextDouble() >= 0.2) return;
-
+        
         String spot = systemBooked[random.nextInt(systemBooked.length)];
         parkingLotManager.cancelBooking(spot);
     }

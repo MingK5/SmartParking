@@ -253,8 +253,13 @@ public class ParkingLotManager {
         return CompletableFuture.supplyAsync(() -> {
             boolean result = spot.cancelBooking();
             if (result) {
+                String status = getSpotStatus(spotId);
                 enqueueUpdate(spotId, "available");
-                enqueueUserMessage("Booking for " + spotId + " canceled.");
+                if (status.equals("reserved") || status.equals("reserved_occupied") ){
+                    enqueueUserMessage("Slot " + spotId + " is now available.");
+                } else {
+                    enqueueUserMessage("Booking for " + spotId + " cancelled.");        
+                }
             }
             return result;
         }, notificationExecutor); // use dedicated executor
