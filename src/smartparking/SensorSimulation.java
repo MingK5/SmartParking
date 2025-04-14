@@ -35,19 +35,6 @@ public class SensorSimulation {
                     if (parkingLotManager.isSoftLocked(spotId)) continue;
 
                     String currentStatus = parkingLotManager.getSpotStatus(spotId);
-
-                    // Process only system-reserved slots (gray)
-                    if (!"reserved".equals(currentStatus)) continue;
-
-                    // 40% chance a car enters a system-reserved slot
-                    if (random.nextDouble() < 0.4) {
-                        TimeUnit.SECONDS.sleep(5); // simulate delay
-
-                        if (parkingLotManager.isBooked(spotId) &&
-                            "reserved".equals(parkingLotManager.getSpotStatus(spotId))) {
-                            parkingLotManager.notifyListeners(spotId, "reserved_occupied");
-                        }
-                    }
                     
                     // 20% chance a car exit early from system-reserved slot
                     if ("reserved_occupied".equals(currentStatus) && random.nextDouble() < 0.2) {
@@ -55,12 +42,21 @@ public class SensorSimulation {
                         continue;
                     }
 
-                    // 80% chance to trigger a wrong parking simulation
-                    if (random.nextDouble() < 0.80) {
-                        simulateWrongParkingCorrection();
+                    // 80% chance of a car entering system-reserved slot
+                    if ("reserved".equals(currentStatus) && random.nextDouble() < 0.8) {
+                        TimeUnit.SECONDS.sleep(5);
+                        if (parkingLotManager.isBooked(spotId) &&
+                            "reserved".equals(parkingLotManager.getSpotStatus(spotId))) {
+                            parkingLotManager.notifyListeners(spotId, "reserved_occupied");
+                            System.out.println("🚗 Car entered spot " + spotId);
+                        }
                     }
                 }
 
+                // 80% chance of wrong parking
+                if (random.nextDouble() < 0.8) {
+                    simulateWrongParkingCorrection();
+                }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 running = false;

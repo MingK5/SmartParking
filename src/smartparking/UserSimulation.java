@@ -49,8 +49,8 @@ public class UserSimulation {
                 .filter(spot -> !parkingLotManager.isBooked(spot))
                 .toArray(String[]::new);
 
-        // 30% chance to book a spot
-        if (availableSpots.length == 0 || random.nextDouble() >= 0.3) return;
+        // 60% chance to book a spot
+        if (availableSpots.length == 0 || random.nextDouble() >= 0.6) return;
 
         // Pick a random available spot
         String spot = availableSpots[random.nextInt(availableSpots.length)];
@@ -72,8 +72,8 @@ public class UserSimulation {
                 .filter(spot -> !parkingLotManager.isUserBooked(spot))
                 .toArray(String[]::new);
 
-        // 20% chance to cancel a system-booked spot
-        if (systemBooked.length == 0 || random.nextDouble() >= 0.2) return;
+        // 5% chance to cancel a system-booked spot
+        if (systemBooked.length == 0 || random.nextDouble() >= 0.05) return;
         
         // Pick a random system-booked spot to cancel
         String spot = systemBooked[random.nextInt(systemBooked.length)];
