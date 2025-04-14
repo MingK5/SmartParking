@@ -12,6 +12,7 @@ import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
 
+// GUI class for the smart car parking system
 public class GUI extends JFrame {
     private JPanel mainPanel;
     private JTextArea notificationArea;
@@ -30,6 +31,7 @@ public class GUI extends JFrame {
     private List<String> notificationMessages = new ArrayList<>();
     private static final int MAX_NOTIFICATIONS = 20;
 
+    // Constructor
     public GUI(ParkingLotManager manager, String userId) {
         this.parkingLotManager = manager;
         this.userId = userId;
@@ -55,6 +57,7 @@ public class GUI extends JFrame {
         setupTimers();
     }
 
+    // Method to create parking zones layout
     private void createZonePanels() {
         JPanel zoneA = new JPanel(new GridLayout(1, 14));
         for (int i = 1; i <= 14; i++) zoneA.add(createSpotLabel("A" + i, false));
@@ -70,6 +73,7 @@ public class GUI extends JFrame {
         mainPanel.add(zoneF);
     }
 
+    // Method to create control buttons (Book, Cancel, Find)
     private void createControlPanel() {
         JPanel controlPanel = new JPanel(new GridLayout(2, 2, 10, 10));
         JButton bookButton = new JButton("Book Slot and Pay");
@@ -94,6 +98,7 @@ public class GUI extends JFrame {
         notifyButton.addActionListener(e -> toggleNotificationPanel());
     }
 
+    // Method to handle slot booking process
     private void handleBooking() {
         if (parkingLotManager.userHasReachedLimit(userId)) {
             JOptionPane.showMessageDialog(this,
@@ -201,7 +206,7 @@ public class GUI extends JFrame {
             if (carPlate.isEmpty()) {
                 errorLabel.setText("Car plate is required.");
                 errorLabel.setVisible(true);
-            } else if (!carPlate.matches("^[A-Za-z0-9]{5,10}$")) {
+            } else if (!carPlate.matches("^(?=.*[A-Za-z])(?=.*\\d)[A-Za-z\\d]{5,10}$")) {
                 errorLabel.setText("Invalid car plate (5–10 alphanumeric chars).");
                 errorLabel.setVisible(true);
             } else {
@@ -293,6 +298,7 @@ public class GUI extends JFrame {
         confirmDialog.setVisible(true);
     }
 
+    // Method to handle booking cancellation process
     private void handleCancellation() {
         // Clean up expired bookings
         userBookedSlots.removeIf(spot -> {
@@ -319,7 +325,6 @@ public class GUI extends JFrame {
 
         // Use thenAccept directly (non-blocking)
         parkingLotManager.cancelBooking(spotToCancel).thenAccept(success -> {
-            System.out.println("Cancel task completed for " + spotToCancel + ": " + success); // ✅ Debug line
             if (success) {
                 // Use Swing thread only for UI-related changes
                 SwingUtilities.invokeLater(() -> userBookedSlots.remove(spotToCancel));
@@ -331,6 +336,7 @@ public class GUI extends JFrame {
         });
     }
 
+    // Method to show a dropdown selection dialog
     private String showDropdown(String title, String[] options) {
     JPanel panel = new JPanel(new FlowLayout(FlowLayout.LEFT));
     JComboBox<String> comboBox = new JComboBox<>(options);
@@ -341,7 +347,7 @@ public class GUI extends JFrame {
     return result == JOptionPane.OK_OPTION ? (String) comboBox.getSelectedItem() : null;
     }
     
-    // Method to auto close dialogs upon soft lock expiry
+    // Method to force close active booking dialogs upon soft lock expiry
     public void closeBookingDialogs() {
         if (activeBookingDialog != null) {
             SwingUtilities.invokeLater(() -> {
@@ -357,7 +363,7 @@ public class GUI extends JFrame {
         }
     }
     
-    
+    // Method to display all booked slots by the user
     private void showBookedSlots() {
         Map<String, String> bookings = parkingLotManager.getUserBookings(userId);
 
@@ -389,6 +395,7 @@ public class GUI extends JFrame {
         JOptionPane.showMessageDialog(this, message.toString());
     }
 
+    // Method to toggle notification panel visibility
     private void toggleNotificationPanel() {
         isNotificationVisible = !notificationPanel.isVisible();
         notificationPanel.setVisible(isNotificationVisible);
@@ -396,6 +403,7 @@ public class GUI extends JFrame {
         repaint();
     }
 
+    // Method to set up notification panel
     private void setupNotificationPanel() {
         notificationPanel = new JPanel(new BorderLayout());
         notificationPanel.setBorder(BorderFactory.createLineBorder(Color.BLACK));
@@ -411,6 +419,7 @@ public class GUI extends JFrame {
         add(notificationPanel, BorderLayout.EAST);
     }
 
+    // Method to configure timer for daily notification reset
     private void setupTimers() {
         notificationCleaner = new Timer();
         notificationCleaner.scheduleAtFixedRate(new TimerTask() {
@@ -420,6 +429,7 @@ public class GUI extends JFrame {
         }, 24 * 60 * 60 * 1000, 24 * 60 * 60 * 1000);
     }
 
+    // Method to display notifications with timestamps
     public void displayNotification(String message) {
         // Get the current timestamp
         LocalDateTime now = LocalDateTime.now();
@@ -439,12 +449,14 @@ public class GUI extends JFrame {
         notificationArea.setText(String.join("\n", notificationMessages));
     }
 
+    // Method to create a panel for a specific parking zone
     private JPanel createZonePanel(String zone, int count, boolean vertical){
         JPanel panel = new JPanel(new GridLayout(count / 2, 2, 3, 3));
         for (int i = 1; i <= count; i++) panel.add(createSpotLabel(zone + i, vertical));
         return panel;
     }
 
+    // Method to create a label for each parking spot
     private JLabel createSpotLabel(String spotId, boolean vertical) {
         JLabel label = new JLabel();
         label.setLayout(new BorderLayout());
@@ -459,6 +471,7 @@ public class GUI extends JFrame {
         return label;
     }
 
+    // Method to update slot UI status and icon
     public void updateSlotStatus(String spotId, String status) {
         String currentStatus = lastSlotStatuses.get(spotId);
 
@@ -509,12 +522,14 @@ public class GUI extends JFrame {
         });
     }
 
+    // Method to add car icon to a parking slot
     private void addCarIcon(JLabel label) {
         ImageIcon carIcon = new ImageIcon("Resources/icons/car.png");
         Image img = carIcon.getImage().getScaledInstance(45, 45, Image.SCALE_SMOOTH);
         label.add(new JLabel(new ImageIcon(img)), BorderLayout.CENTER);
     }
 
+    // Method to create the UI legend panel
     private JPanel createLegendPanel() {
         JPanel legend = new JPanel();
         legend.setLayout(new BoxLayout(legend, BoxLayout.Y_AXIS));
@@ -532,6 +547,7 @@ public class GUI extends JFrame {
         return legend;
     }
 
+    // Method to create a row in the legend panel
     private JPanel createLegendRow(Color color, String iconPath, String desc) {
         JPanel row = new JPanel(new FlowLayout(FlowLayout.LEFT, 5, 2));
         row.setAlignmentX(Component.LEFT_ALIGNMENT);
@@ -555,6 +571,7 @@ public class GUI extends JFrame {
         return row;
     }
 
+    // Method to convert duration text to number of hours
     private int getHoursFromDuration(String duration) {
         return switch (duration) {
             case "30 minutes", "1 hour" -> 1;

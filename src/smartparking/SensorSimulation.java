@@ -7,17 +7,20 @@ import javax.swing.SwingUtilities;
 import javax.swing.JOptionPane;
 import java.util.stream.Collectors;
 
+// Class to simulate sensor behavior for the smart car parking system
 public class SensorSimulation {
-    private final ParkingLotManager parkingLotManager;
-    private final Random random;
-    private volatile boolean running;
-    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1);
+    private final ParkingLotManager parkingLotManager; // Reference to backend manager
+    private final Random random; // Random generator for simulation
+    private volatile boolean running; // Flag to control simulation loop
+    private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1); // For delayed tasks
 
+    // Constructor
     public SensorSimulation(ParkingLotManager manager) {
         this.parkingLotManager = manager;
         this.random = new Random();
     }
 
+    // Main simulation loop — periodically simulates car arrivals and wrong parking behavior
     public void run() {
         running = true;
 
@@ -33,10 +36,10 @@ public class SensorSimulation {
 
                     String currentStatus = parkingLotManager.getSpotStatus(spotId);
 
-                    // Only proceed for system-reserved spots
+                    // Process only system-reserved slots (gray)
                     if (!"reserved".equals(currentStatus)) continue;
 
-                    // Simulate 40% chance of car arriving after being reserved
+                    // 40% chance a car enters a system-reserved slot
                     if (random.nextDouble() < 0.4) {
                         TimeUnit.SECONDS.sleep(5); // simulate delay
 
@@ -45,8 +48,14 @@ public class SensorSimulation {
                             parkingLotManager.notifyListeners(spotId, "reserved_occupied");
                         }
                     }
+                    
+                    // 20% chance a car exit early from system-reserved slot
+                    if ("reserved_occupied".equals(currentStatus) && random.nextDouble() < 0.2) {
+                        parkingLotManager.notifyListeners(spotId, "reserved");
+                        continue;
+                    }
 
-                    // Simulate wrong parking scenario occasionally
+                    // 80% chance to trigger a wrong parking simulation
                     if (random.nextDouble() < 0.80) {
                         simulateWrongParkingCorrection();
                     }
@@ -59,10 +68,14 @@ public class SensorSimulation {
         }
     }
 
+    // Tracks already relocated slots
     private final Set<String> correctedSlots = ConcurrentHashMap.newKeySet();
 
+    // Simulate a user parking in the wrong slot and show relocation popup
     private void simulateWrongParkingCorrection() {
         String[] allSpots = parkingLotManager.getSpotIds();
+        
+        // Get all booked user slots not already corrected
         List<String> userBooked = Arrays.stream(allSpots)
                 .filter(parkingLotManager::isUserBooked)
                 .filter(spot -> !correctedSlots.contains(spot))
@@ -72,17 +85,18 @@ public class SensorSimulation {
 
         // Shuffle to make wrong spot and user spot truly random
         Collections.shuffle(userBooked);
-        String correctSpot = userBooked.get(0); // Pick one for this cycle
+        String correctSpot = userBooked.get(0); // Pick one slot for this cycle
         correctedSlots.add(correctSpot); 
 
         String userId = getUserIdForBookedSpot(correctSpot);
         if (userId == null) return;
 
+        // Extract car plate info for the dialog
         Map<String, String> userBookings = parkingLotManager.getUserBookings(userId);
         String carInfo = userBookings.getOrDefault(correctSpot, "unknown");
         String carPlate = carInfo.contains("Plate: ") ? carInfo.split(",")[0].replace("Plate: ", "") : "UNKNOWN";
 
-        // Randomize available wrong spots
+        // Find a nearby wrong spot that is not booked or occupied
         List<String> availableWrongSpots = Arrays.stream(allSpots)
                 .filter(spot -> !spot.equals(correctSpot))
                 .filter(spot -> !parkingLotManager.isUserBooked(spot)) // ✅ prevent hijacking user slots
@@ -95,9 +109,9 @@ public class SensorSimulation {
         Collections.shuffle(availableWrongSpots);
         String wrongSpot = availableWrongSpots.get(0);
 
-        // Schedule with delay
+        // Schedule relocation logic after delay
         scheduler.schedule(() -> {
-            // Double-check that the slot is still booked
+            // Double-check that the slot is still booked before applying wrong_parking
             if (!parkingLotManager.isBooked(correctSpot) || !parkingLotManager.isUserBooked(correctSpot)) {
                 System.out.println("❌ Skipping relocation — slot " + correctSpot + " was cancelled.");
                 parkingLotManager.notifyListeners(wrongSpot, "available"); // clear red if any
@@ -106,6 +120,7 @@ public class SensorSimulation {
 
             parkingLotManager.notifyListeners(wrongSpot, "wrong_parking");
 
+            // Display relocation dialog on GUI thread
             SwingUtilities.invokeLater(() -> {
                 JOptionPane.showMessageDialog(null,
                     "⚠ Wrong Parking Detected!\n" +
@@ -116,7 +131,7 @@ public class SensorSimulation {
                     JOptionPane.WARNING_MESSAGE
                 );
 
-                // Check again just before relocating
+                // Final check on the booking status before showing relocation
                 if (!parkingLotManager.isBooked(correctSpot) || !parkingLotManager.isUserBooked(correctSpot)) {
                     System.out.println("❌ Relocation skipped — booking was cancelled for " + correctSpot);
                     parkingLotManager.notifyListeners(wrongSpot, "available");
@@ -128,7 +143,7 @@ public class SensorSimulation {
         }, 15, TimeUnit.SECONDS);
     }
 
-    // Extracted helper to get userId from a booked spot
+    // Helper method to get user ID for a booked spot
     private String getUserIdForBookedSpot(String correctSpot) {
         for (String userId : parkingLotManager.getAllUserIds()) {
             Map<String, String> bookings = parkingLotManager.getUserBookings(userId);
@@ -139,6 +154,7 @@ public class SensorSimulation {
         return null;
     }
 
+    // Stop the simulation loop
     public void stop() {
         running = false;
     }
