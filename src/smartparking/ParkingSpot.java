@@ -138,10 +138,10 @@ public class ParkingSpot {
 
         long warningDelay = Math.max(0, millis - (15 * 60 * 1000)); // Warn 15 mins before expiry
 
-        // Schedule expiration warning
+        // Schedule expiration warning (user bookings only)
         warningTask = new TimerTask() {
             public void run() {
-                if (booked.get()) { // ✅ Double-check it's still booked
+                if (booked.get() && bookedByUserId != null && !"system".equals(bookedByUserId)) {
                     manager.notifyUser("Warning: Booking for spot " + id + " expires in 15 minutes");
                 }
             }
