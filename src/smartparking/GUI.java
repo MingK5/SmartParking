@@ -11,6 +11,9 @@ import java.time.format.DateTimeFormatter;
 import java.io.File;
 import java.util.ArrayList;
 import java.util.List;
+import javax.sound.sampled.AudioSystem;
+import javax.sound.sampled.AudioInputStream;
+import javax.sound.sampled.Clip;
 
 // GUI class for the smart car parking system
 public class GUI extends JFrame {
@@ -429,7 +432,7 @@ public class GUI extends JFrame {
         }, 24 * 60 * 60 * 1000, 24 * 60 * 60 * 1000);
     }
 
-    // Method to display notifications with timestamps
+    // Method to display notifications with timestamps and sound
     public void displayNotification(String message) {
         // Get the current timestamp
         LocalDateTime now = LocalDateTime.now();
@@ -447,6 +450,24 @@ public class GUI extends JFrame {
 
         // Update the notification area
         notificationArea.setText(String.join("\n", notificationMessages));
+        
+        // Play the notification sound
+        playNotificationSound();
+    }
+    
+    // Method to play the notification sound
+    private void playNotificationSound() {
+    try {
+        // Replace "Resources/sounds/notification.wav" with your actual sound file path
+        File soundFile = new File("Resources/sounds/notification.wav");
+        AudioInputStream audioStream = AudioSystem.getAudioInputStream(soundFile);
+        Clip clip = AudioSystem.getClip();
+        clip.open(audioStream);
+        clip.start();
+    } catch (Exception e) {
+        System.err.println("⚠️ Unable to play notification sound: " + e.getMessage());
+        e.printStackTrace();
+        }
     }
 
     // Method to create a panel for a specific parking zone
