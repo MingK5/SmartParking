@@ -96,6 +96,9 @@ public class SensorSimulation {
             .filter(spot -> !"booked_occupied".equals(parkingLotManager.getSpotStatus(spot)))
             .collect(Collectors.toList());
 
+        // Enforce live check to remove any slot that is still booked by the user
+        availableWrongSpots.removeIf(spot -> parkingLotManager.isUserBooked(spot));
+        
         if (availableWrongSpots.isEmpty()) return;
         Collections.shuffle(availableWrongSpots);
         String wrongSpot = availableWrongSpots.get(0);

@@ -304,10 +304,16 @@ public class GUI extends JFrame {
     // Method to handle booking cancellation process
     private void handleCancellation() {
         // Clean up expired bookings
-        userBookedSlots.removeIf(spot -> {
-            boolean expired = !parkingLotManager.isBooked(spot);
-            if (expired) parkingLotManager.markAsUserUnbooked(spot, userId);
-            return expired;
+        Map<String, String> bookings = parkingLotManager.getUserBookings(userId);
+        Set<String> expired = new HashSet<>();
+        for (String spot : bookings.keySet()) {
+            if (!parkingLotManager.isBooked(spot)) {
+                expired.add(spot);
+            }
+        }
+        expired.forEach(spot -> {
+            parkingLotManager.markAsUserUnbooked(spot, userId);
+            userBookedSlots.remove(spot);
         });
 
         String[] bookedSpots = userBookedSlots.toArray(new String[0]);
@@ -505,6 +511,11 @@ public class GUI extends JFrame {
         // Update the cache before UI repaint to avoid loops
         lastSlotStatuses.put(spotId, status);
 
+        // If status is "available", remove the slot from userBookedSlots
+        if ("available".equals(status)) {
+            userBookedSlots.remove(spotId);
+        }
+        
         JLabel slot = slotLabels.get(spotId);
         if (slot == null) return;
 
