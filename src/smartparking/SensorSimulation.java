@@ -13,6 +13,7 @@ public class SensorSimulation {
     private final Random random; // Random generator for simulation
     private volatile boolean running; // Flag to control simulation loop
     private final ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(1); // For delayed tasks
+    private final Set<String> userSimulatedSlots = ConcurrentHashMap.newKeySet(); // Track user-booked slots that have been simulated
 
     // Constructor
     public SensorSimulation(ParkingLotManager manager) {
@@ -27,8 +28,9 @@ public class SensorSimulation {
         while (running) {
             try {
                 TimeUnit.SECONDS.sleep(30); // Simulate sensor polling interval
-
                 String[] allSpots = parkingLotManager.getSpotIds();
+                
+                // === SYSTEM-RESERVED SLOT BEHAVIOR ===
                 for (String spotId : allSpots) {
                     // Skip user bookings and soft-locked slots
                     if (parkingLotManager.isUserBooked(spotId)) continue;
@@ -53,9 +55,21 @@ public class SensorSimulation {
                     }
                 }
 
-                // 80% chance of wrong parking
-                if (random.nextDouble() < 0.8) {
-                    simulateWrongParkingCorrection();
+                // === USER-BOOKED SLOT BEHAVIOR ===
+                // 50% chance of correct/wrong parking per user-booked slot
+                for (String spotId : allSpots) {
+                    if (!parkingLotManager.isUserBooked(spotId)) continue;
+                    if (userSimulatedSlots.contains(spotId)) continue;
+
+                    userSimulatedSlots.add(spotId); // Prevent re-simulating
+                    scheduler.schedule(() -> {
+                        boolean simulateCorrectParking = random.nextBoolean(); // 50%
+                        if (simulateCorrectParking) {
+                            parkingLotManager.notifyListeners(spotId, "booked_occupied");
+                        } else {
+                            simulateWrongParkingCorrection(spotId);
+                        }
+                    }, 15, TimeUnit.SECONDS); // Delay decision by 15 seconds
                 }
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -64,59 +78,36 @@ public class SensorSimulation {
         }
     }
 
-    // Tracks already relocated slots
-    private final Set<String> correctedSlots = ConcurrentHashMap.newKeySet();
-
     // Simulate a user parking in the wrong slot and show relocation popup
-    private void simulateWrongParkingCorrection() {
-        String[] allSpots = parkingLotManager.getSpotIds();
-        
-        // Get all booked user slots not already corrected
-        List<String> userBooked = Arrays.stream(allSpots)
-                .filter(parkingLotManager::isUserBooked)
-                .filter(spot -> !correctedSlots.contains(spot))
-                .collect(Collectors.toList());
-
-        if (userBooked.isEmpty()) return;
-
-        // Shuffle to make wrong spot and user spot truly random
-        Collections.shuffle(userBooked);
-        String correctSpot = userBooked.get(0); // Pick one slot for this cycle
-        correctedSlots.add(correctSpot); 
-
+    private void simulateWrongParkingCorrection(String correctSpot) {
         String userId = getUserIdForBookedSpot(correctSpot);
         if (userId == null) return;
 
-        // Extract car plate info for the dialog
         Map<String, String> userBookings = parkingLotManager.getUserBookings(userId);
         String carInfo = userBookings.getOrDefault(correctSpot, "unknown");
         String carPlate = carInfo.contains("Plate: ") ? carInfo.split(",")[0].replace("Plate: ", "") : "UNKNOWN";
 
-        // Find a nearby wrong spot that is not booked or occupied
-        List<String> availableWrongSpots = Arrays.stream(allSpots)
-                .filter(spot -> !spot.equals(correctSpot))
-                .filter(spot -> !parkingLotManager.isUserBooked(spot)) // ✅ prevent hijacking user slots
-                .filter(spot -> !"booked".equals(parkingLotManager.getSpotStatus(spot))) // ✅ exclude visually green
-                .filter(spot -> !"reserved_occupied".equals(parkingLotManager.getSpotStatus(spot))) // ✅ exclude gray+car
-                .filter(spot -> !"booked_occupied".equals(parkingLotManager.getSpotStatus(spot))) // ✅ exclude green+car
-                .collect(Collectors.toList());
+        List<String> allSpots = Arrays.asList(parkingLotManager.getSpotIds());
+        List<String> availableWrongSpots = allSpots.stream()
+            .filter(spot -> !spot.equals(correctSpot))
+            .filter(spot -> !parkingLotManager.isUserBooked(spot))
+            .filter(spot -> !"booked".equals(parkingLotManager.getSpotStatus(spot)))
+            .filter(spot -> !"reserved_occupied".equals(parkingLotManager.getSpotStatus(spot)))
+            .filter(spot -> !"booked_occupied".equals(parkingLotManager.getSpotStatus(spot)))
+            .collect(Collectors.toList());
 
         if (availableWrongSpots.isEmpty()) return;
         Collections.shuffle(availableWrongSpots);
         String wrongSpot = availableWrongSpots.get(0);
 
-        // Schedule relocation logic after delay
         scheduler.schedule(() -> {
-            // Double-check that the slot is still booked before applying wrong_parking
             if (!parkingLotManager.isBooked(correctSpot) || !parkingLotManager.isUserBooked(correctSpot)) {
-                System.out.println("❌ Skipping relocation — slot " + correctSpot + " was cancelled.");
-                parkingLotManager.notifyListeners(wrongSpot, "available"); // clear red if any
+                parkingLotManager.notifyListeners(wrongSpot, "available");
                 return;
             }
 
             parkingLotManager.notifyListeners(wrongSpot, "wrong_parking");
 
-            // Display relocation dialog on GUI thread
             SwingUtilities.invokeLater(() -> {
                 JOptionPane.showMessageDialog(null,
                     "⚠ Wrong Parking Detected!\n" +
@@ -127,9 +118,7 @@ public class SensorSimulation {
                     JOptionPane.WARNING_MESSAGE
                 );
 
-                // Final check on the booking status before showing relocation
                 if (!parkingLotManager.isBooked(correctSpot) || !parkingLotManager.isUserBooked(correctSpot)) {
-                    System.out.println("❌ Relocation skipped — booking was cancelled for " + correctSpot);
                     parkingLotManager.notifyListeners(wrongSpot, "available");
                 } else {
                     parkingLotManager.notifyListeners(wrongSpot, "available");
